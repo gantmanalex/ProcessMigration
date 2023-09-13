@@ -22,6 +22,7 @@
             "opCode": "OS",
             "Name": "os_MonitorLoad",
             "Param0": "LoadProcessID1",
+            "Param1": "Event1",
             "Type": "Memory",
             "Size": 4
           },

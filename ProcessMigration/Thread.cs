@@ -48,27 +48,32 @@ namespace ProcessMigration
         }
         public void SetState(ThreadState state, object obj)
         {
-            currentState = state;
+            SystemEvent _event;
 
             switch (state)
             {
                 case ThreadState.RUNNING:
-                    Process process = (Process)obj;
-                    Task<int> task = Task.Run(() => process.EntryPoint(this));
+
+                    if (currentState != ThreadState.WAIT)
+                    {
+                        Process process = (Process)obj;
+                        Task<int> task = Task.Run(() => process.EntryPoint(this));
+                    }
                     break;
                 case ThreadState.WAIT:
-                    SystemEvent _event = (SystemEvent)obj;
+                    _event = (SystemEvent)obj;
                     _event.Set();
                     ThreadWaitList.Add(_event);
                     break;
             }
+            currentState = state;
         }
 
         public ThreadState GetState()
         {
             return currentState;
         }
-        private Tuple<PageDesc , string> GetDataDesc(string var_name, PageType type)
+        public Tuple<PageDesc , string> GetDataDesc(string var_name, PageType type)
         {
             foreach (var mem in memory)
             {
@@ -114,9 +119,10 @@ namespace ProcessMigration
                             case "os_MonitorLoad":
 
                                 var = GetDataDesc(inst.Param0, PageType.DATA);
-
+                                int heavyLoadedPid = Int32.Parse(var.Item2);
                                 Process ownerProcess = os.GetProcessById(Pid);
-                                ownerProcess.MonitorLoad(Int32.Parse(var.Item2));
+
+                                ownerProcess.MonitorLoad(heavyLoadedPid, inst.Param1);
                                 break;
                             case "os_CreateEvent":
                                    

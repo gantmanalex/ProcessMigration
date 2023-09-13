@@ -221,11 +221,13 @@ namespace ProcessMigration
 
         }
 
-        public void MonitorLoad(int offloadProcessId)
+        public void MonitorLoad(int offloadProcessId, string systemEventVar) 
         {
             //Attaching Profiler
             Console.WriteLine("Attaching heavy load proffiler ...");
+
             ProfilerEnabled = offloadProcessId;
+            ProfilerSyncEventVar = systemEventVar;
 
         }
 
@@ -271,6 +273,28 @@ namespace ProcessMigration
                             if (Threshold == MAX_LOAD_VALUE)
                             {
                                 Console.WriteLine("Process[{0}]:Profiler - Worker #{1} intensive CPU usage detected", Pid, mainThread.tid);
+
+                                Process heavyLoader = os.GetProcessById(ProfilerEnabled);
+                                Thread loaderMainThread =  heavyLoader.GetMainThread();
+
+                                //Check if MainThread waing for Load 
+                                if (loaderMainThread == null || loaderMainThread.GetState() != ThreadState.WAIT)
+                                {
+                                    Console.WriteLine("Process[{0}]:Profiler - Loader process not read yet,", Pid, mainThread.tid);
+                                    do
+                                    {
+                                        loaderMainThread = heavyLoader.GetMainThread();
+                                        if (loaderMainThread != null && loaderMainThread.GetState() == ThreadState.WAIT) { break; }
+                                        Console.WriteLine("Process[{0}]:Profiler - wating for HeavyLoader process", Pid, mainThread.tid);
+                                        await Task.Delay(1000);
+                                    } while (true);
+
+                                }
+                                Console.WriteLine("Process[{0}]:Profiler - offloading Thread[{3}] to Process[{2}],", Pid, mainThread.tid, heavyLoader.Pid, mainThread.tid);
+
+                                Tuple<PageDesc, string> var =  loaderMainThread.GetDataDesc(ProfilerSyncEventVar, PageType.DATA);
+                                os.GetEvent(Int32.Parse(var.Item2)).Reset();
+
                             }
                         }
                     } else
@@ -279,6 +303,11 @@ namespace ProcessMigration
 
             
             return 0;
+        }
+
+        public Thread GetMainThread()
+        {
+            return mainThread;
         }
 
         internal int FindNextEntryPoint(string lable)
@@ -323,5 +352,6 @@ namespace ProcessMigration
 
         Thread mainThread;
         private volatile int ProfilerEnabled = 0;
+        private volatile string ProfilerSyncEventVar;
     }
 }

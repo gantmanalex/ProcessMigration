@@ -45,6 +45,8 @@ namespace ProcessMigration
         }
         public void Reset()
         {
+            OwnerThread.SetState(ThreadState.RUNNING, null);
+
             ThreadWaitEvent.Reset();
         }
     }
@@ -167,6 +169,7 @@ namespace ProcessMigration
             return freeSystemResourceIdx++;
 
         }
+
 
         private List<hwCPU> freeCPUs = new List<hwCPU>();
         private PageDesc[] SystemMemoryList;
