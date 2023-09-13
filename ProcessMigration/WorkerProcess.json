@@ -1,0 +1,92 @@
+{
+  "Worker": [
+    {
+      "CS": [
+        {
+          "Offset#0": {
+            "opCode": "OS",
+            "Name": "os_ConsolePrint",
+            "Param0": "Data1",
+            "Type": "BSS",
+            "Size": 11
+          },
+          "Offset#1": {
+            "opCode": "OS",
+            "Name": "os_CreateProcess",
+            "Param0": "LoadProcessID1",
+            "Param1": "HeavyLoader.json",
+            "Type": "Memory",
+            "Size": 4
+          },
+          "Offset#2": {
+            "opCode": "OS",
+            "Name": "os_MonitorLoad",
+            "Param0": "LoadProcessID1",
+            "Type": "Memory",
+            "Size": 4
+          },
+          "Offset#3": {
+            "opCode": "CPU",
+            "Name": "mov",
+            "Operand": "indirect_to",
+            "Param0": "counter",
+            "Param1": 0,
+            "Type": "Memory",
+            "Size": 4
+          },
+          "Offset#4": {
+            "opCode": "OS",
+            "Name": "os_ConsolePrint",
+            "Param0": "Data2",
+            "Type": "BSS",
+            "Size": 11
+          },
+          "Offset#5": {
+            "opCode": "CPU",
+            "Name": "cmp",
+            "Operand": "indirect_while_less",
+            "Param0": "counter",
+            "Param1": 10,
+            "Condition": "jmp",
+            "Param2": "Offset#4",
+            "Type": "Memory"
+          },
+          "Offset#6": {
+            "opCode": "OS",
+            "Name": "Exit",
+            "Code": 1
+          }
+        }
+      ],
+      "BSS": [
+        {
+          "Field#0": {
+            "Name": "Data1",
+            "Source": "Hello world",
+            "Size": 11
+          },
+          "Field#1": {
+            "Name": "Data2",
+            "Source": "Loop Iteration",
+            "Size": 11
+          }
+        }
+      ],
+      "Memory": [
+        {
+          "Field#0": {
+            "Name": "counter",
+            "Source": 0,
+            "Size": 4
+          },
+          "Field#1": {
+            "Name": "LoadProcessID1",
+            "Source": 0,
+            "Size": 4
+          }
+
+        }
+      ]
+    }
+  ]
+}

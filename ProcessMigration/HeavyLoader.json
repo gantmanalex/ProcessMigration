@@ -1,0 +1,54 @@
+{
+  "HeavyLoader": [
+    {
+      "CS": [
+        {
+          "Offset#0": {
+            "opCode": "OS",
+            "Name": "os_ConsolePrint",
+            "Param0": "Data1",
+            "Type": "BSS",
+            "Size": 11
+          },
+          "Offset#1": {
+            "opCode": "OS",
+            "Name": "os_CreateEvent",
+            "Param0": "Event1",
+            "Param1": "EventReset",
+            "Size": 4
+          },
+          "Offset#2": {
+            "opCode": "OS",
+            "Name": "os_WaitEvent",
+            "Param0": "Event1",
+            "Param1": "Infinite",
+            "Size": 4
+          },
+          "Offset#3": {
+            "opCode": "OS",
+            "Name": "Exit",
+            "Code": 1
+          }
+        }
+      ],
+      "BSS": [
+        {
+          "Field#0": {
+            "Name": "Data1",
+            "Source": "Hello world",
+            "Size": 11
+          }
+        }
+      ],
+      "Memory": [
+        {
+          "Field#0": {
+            "Name": "Event1",
+            "Source": 0,
+            "Size": 4
+          }
+        }
+      ]
+    }
+  ]
+}
