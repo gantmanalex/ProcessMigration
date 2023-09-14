@@ -31,23 +31,30 @@ namespace ProcessMigration
 
         public void Wait()
         {
-            OwnerThread.SetState(ThreadState.WAIT, this);
+            lock (ThreadWaitEvent)
+            {
+                Monitor.Wait(ThreadWaitEvent, 1000 + WaitPerioud);
+            }
         }
 
         private Thread OwnerThread;
         private EventState State;
         private int WaitPerioud;
         private EventWaitHandle ThreadWaitEvent = new EventWaitHandle(false, EventResetMode.ManualReset);
-
+        private object test = new object();
         public void Set()
         {
-            ThreadWaitEvent.Set();
+
+            OwnerThread.SetState(ThreadState.RUNNING, null);
+
+            // Monitor.Enter(ThreadWaitEvent);
         }
         public void Reset()
         {
-            OwnerThread.SetState(ThreadState.RUNNING, null);
-
-            ThreadWaitEvent.Reset();
+            lock (ThreadWaitEvent)
+            {
+                Monitor.Pulse(ThreadWaitEvent);
+            }
         }
     }
     public class Os

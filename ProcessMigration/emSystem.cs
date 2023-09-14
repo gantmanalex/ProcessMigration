@@ -36,7 +36,10 @@ namespace ProcessMigration
 
             os.MainThread(this);
 
-            while (true) { };
+            while (true) {
+                System.Threading.Thread.Sleep(50);
+
+            };
 
         }
 

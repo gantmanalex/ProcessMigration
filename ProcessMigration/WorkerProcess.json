@@ -47,7 +47,7 @@
             "Name": "cmp",
             "Operand": "indirect_while_less",
             "Param0": "counter",
-            "Param1": 10,
+            "Param1": 30,
             "Condition": "jmp",
             "Param2": "Offset#4",
             "Type": "Memory"

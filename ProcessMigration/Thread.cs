@@ -35,6 +35,7 @@ namespace ProcessMigration
         private int Pid;
         private int Tid;
         private ThreadState currentState;
+        public object threadLock = new object();
         public int tid { 
             get  { return Tid; } }
 
@@ -49,7 +50,7 @@ namespace ProcessMigration
         public void SetState(ThreadState state, object obj)
         {
             SystemEvent _event;
-
+      
             switch (state)
             {
                 case ThreadState.RUNNING:
@@ -59,14 +60,16 @@ namespace ProcessMigration
                         Process process = (Process)obj;
                         Task<int> task = Task.Run(() => process.EntryPoint(this));
                     }
+                    currentState = state;
                     break;
                 case ThreadState.WAIT:
                     _event = (SystemEvent)obj;
-                    _event.Set();
                     ThreadWaitList.Add(_event);
+                    currentState = state;
+                    _event.Wait();
                     break;
             }
-            currentState = state;
+          
         }
 
         public ThreadState GetState()
@@ -211,7 +214,8 @@ namespace ProcessMigration
 
         internal void WaitForEvent()
         {
-            foreach(SystemEvent _event in ThreadWaitList)
+
+            foreach (SystemEvent _event in ThreadWaitList)
             {
                 _event.Wait();
             }
