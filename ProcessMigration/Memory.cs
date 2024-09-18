@@ -9,77 +9,38 @@ using System.Xml.Linq;
 
 namespace ProcessMigration
 {
-    public enum PageType
+
+    public class emMemory
     {
-        CODE,
-        DATA,
-        BSS,
-        NOSPEC
-    }
-
-    internal class DataHolder
-    {
-        public DataHolder(string _data) { update(_data); }
-
-        private string intData;
-        public string data   // property
+        private static emMemory signleTone = new emMemory();
+        public static emMemory GetSingleTone()
         {
-            get { return intData; }
-        }
-        public void update(string _data)
-        { intData = _data; }
-    }
-    internal class hwMemoryPage
-    {
-        public hwMemoryPage(PageType segment)
-        {
-            dataBank = new Dictionary<int, DataHolder>();
-
-            //TODO: Hypervisor register page
-            pages_address = 1;
-
-            Segment = segment;
+            return signleTone;
         }
 
-        private PageType Segment;
-
-        private readonly int pages_address;
-
-        private bool Locked = false;
-
-        public int GetPageAddress()
+        public hwMemory AllocatePageHive(int size)
         {
-            return pages_address;
+            return new hwMemory(size);
         }
 
-        public PageType GetPageType()
+        public class hwMemory
         {
-            return Segment;
-        }
+            public hwMemory(int size)
+            {
+                dataBank = new Dictionary<int, DataElement>(size);
+            }
 
-        public string GetData(int pageIdx, int offset)
-        {
-            return dataBank[offset].data;
-        }
+            public DataElement Read(int _physicalAddress)
+            {
+                return dataBank[_physicalAddress];
+            }
 
-        public void StoreData(int offset, string data)
-        {
-            dataBank[offset] = new DataHolder(data);
-            //Todo: Trigger Memory Access interrupt
-        }
+            public void Write(int _physicalAddress, DataElement _dataElement)
+            {
+                dataBank[_physicalAddress] = _dataElement;
+            }
 
-   
-        internal void SetData(int offset, string data)
-        {
-            dataBank[offset].update(data);
+            internal Dictionary<int, DataElement> dataBank;
         }
-
-        internal void LockPage()
-        {
-            Locked = true;
-        }
-
-        internal Dictionary<int, DataHolder> dataBank;
-        internal int LastFreePageIdx = 0;
     }
 }

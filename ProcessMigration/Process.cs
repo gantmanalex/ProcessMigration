@@ -2,12 +2,16 @@
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Dynamic;
 using System.IO;
 using System.Linq;
 using System.Net.Http.Headers;
+using System.Net.NetworkInformation;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
+using System.Runtime.InteropServices;
+using System.Runtime.Remoting.Messaging;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -16,8 +20,21 @@ using System.Xml.Linq;
 
 namespace ProcessMigration
 {
-    public class pseudoInstruction
-    {        
+   
+    public class DataElement
+    {
+        private int physicalAddress;
+        public DataElement(int _physicalAddress)
+        {  physicalAddress = _physicalAddress; }
+        public int GetPhisicalAddress() { return physicalAddress; }
+       
+    }
+    public class pseudoInstruction: DataElement
+    {
+        public pseudoInstruction(int _physicalAddress) : base(_physicalAddress)
+        {
+        }
+
         public string Name { get; set; }
         public virtual bool Execute(Thread thread, PageDesc desc)  
         { return false;}
@@ -25,6 +42,10 @@ namespace ProcessMigration
     }
     public class OsInvokeMethod : pseudoInstruction
     {
+        public OsInvokeMethod(int _physicalAddress) : base(_physicalAddress)
+        {
+        }
+
         public string Param0 { get; set; }
 
         public string Param1 { get; set; }
@@ -41,6 +62,10 @@ namespace ProcessMigration
 
     public class Exit: pseudoInstruction
     {
+        public Exit(int _physicalAddress) : base(_physicalAddress)
+        {
+        }
+
         public int Code { get; set; }
 
         public new virtual bool Execute(Thread thread, PageDesc desc)
@@ -53,6 +78,9 @@ namespace ProcessMigration
 
     public class cpuInstruction : pseudoInstruction
     {
+        public cpuInstruction(int _physicalAddress) : base(_physicalAddress)
+        {
+        }
 
         public string Param0 { get; set; }
         public string Param1 { get; set; }
@@ -69,11 +97,15 @@ namespace ProcessMigration
         }
     }
 
-    public class memoryLocatedData
+    public class memoryLocatedData : DataElement
     {
         public string Name;
         public string Source;
         public int Size;
+
+        public memoryLocatedData(int _physicalAddress) : base(_physicalAddress)
+        {
+        }
     }
 
     public class pseudocode_MainThread
@@ -83,38 +115,50 @@ namespace ProcessMigration
     public class Process
     {
 
-        public Process(string name, int pid, string binary)
+        public Process(string name, int pid, string binary, emMemory.hwMemory _physicalMemory)
         {
             Name = name;
             Pid = pid;
             Console.WriteLine("Process \"{0}\" created ", name);
 
 
-
-            //Parse pseudo Instruction JSON
-            int OsExitIdx = 0;
-            int BssFiledIdx = 0;
             orderedInstructionList = new Dictionary<string, pseudoInstruction>();
-            bssDataList = new List<memoryLocatedData>();
-            heapDataList = new List<memoryLocatedData>();
-            pages = new Dictionary<int, PageDesc>();
+            threads = new List<Thread>();
+            DataList = new List<memoryLocatedData>();
+            BssList = new List<memoryLocatedData>();
+            CodeList = new List<pseudoInstruction>();
+
+            //Currently process will get 1Kb virtual address space
+            ProcessHeapPhy = head_ProcessHeapPhy;
+            ProcessCodePhy = head_ProcessCodePhy;
+            ProcessBSSPhy = head_ProcessBSSPhy;
+            ProcessStackPhy = head_ProcessStackPhy;
+
+            ProcessBSS = new Tuple<int, int>(ProcessBSSPhy, 100);
+            ProcessHeap = new Tuple<int, int>(ProcessHeapPhy, 1023);
+            ProcessStack = new Tuple<int, int>(ProcessStackPhy, 1000);
+            ProcessCode = new Tuple<int, int>(ProcessCodePhy, 1024);
+
+
+            emMemory.hwMemory physicalMemory = _physicalMemory;
+            physicalMemorycurrPtr = 0;
 
             Os os = Os.GetSingleton();
 
-            PageDesc currMemPage = os.GetNextFreeMemoryDescriptor(PageType.DATA);
-            pages[LastFreePageIdx] = currMemPage;
-            LastFreePageIdx++;
+            /*            PageDesc currMemPage = os.GetNextFreeMemoryDescriptor(PageType.DATA);
+                        pages[LastFreePageIdx] = currMemPage;
+                        LastFreePageIdx++;
 
-            PageDesc currBssPage = os.GetNextFreeMemoryDescriptor(PageType.BSS);
-            pages[LastFreePageIdx] = currBssPage;
-            LastFreePageIdx++;
-
+                        PageDesc currBssPage = os.GetNextFreeMemoryDescriptor(PageType.BSS);
+                        pages[LastFreePageIdx] = currBssPage;
+                        LastFreePageIdx++;
+            */
 
             //mainThread = new Thread("System", Pid);
             //mainThread.AssingMemory(pages);
 
             dynamic worker = JsonConvert.DeserializeObject<dynamic>(File.ReadAllText(binary))[Name];
-                
+
             foreach (var segments in worker)
             {
                 foreach (var segment in segments)
@@ -131,7 +175,8 @@ namespace ProcessMigration
                                             {
                                                 case "OS":
                                                     {
-                                                        OsInvokeMethod method = new OsInvokeMethod();
+                                                        OsInvokeMethod method = new OsInvokeMethod(ProcessCodePhy);
+                                                        physicalMemory.Write(ProcessCodePhy++, method);
                                                         switch (instruction.Name.ToString())
                                                         {
 
@@ -151,7 +196,7 @@ namespace ProcessMigration
                                                                 method.Name = instruction.Name;
                                                                 method.Param0 = instruction.Param0;
                                                                 method.Param1 = instruction.Param1;
-                                                                method.Type = instruction.Type;
+                                                                method.Type = "Memory";
                                                                 method.Size = instruction.Size;
 
                                                                 break;
@@ -159,13 +204,20 @@ namespace ProcessMigration
                                                                 method.Name = instruction.Name;
                                                                 method.Param0 = instruction.Code;
                                                                 break;
+                                                            case "MainLoop":
+                                                                method.Name = instruction.Name;
+                                                                method.Param0 = instruction.Code;
+                                                                break;
+
                                                         }
                                                         orderedInstructionList[opCode.Name] = method;
+                                                        CodeList.Add(method);
                                                         break;
                                                     }
                                                 case "CPU":
                                                     {
-                                                        cpuInstruction method = new cpuInstruction();
+                                                        cpuInstruction method = new cpuInstruction(ProcessCodePhy);
+                                                        physicalMemory.Write(ProcessCodePhy++, method);
                                                         switch (instruction.Name.ToString())
                                                         {
                                                             case "mov":
@@ -188,36 +240,58 @@ namespace ProcessMigration
 
                                                         }
                                                         orderedInstructionList[opCode.Name] = method;
+                                                        CodeList.Add(method);
                                                         break;
                                                     }
                                             }
                                             break;
                                         case "BSS":
-
-                                            memoryLocatedData data = new memoryLocatedData();
+                                            memoryLocatedData data = new memoryLocatedData(ProcessBSSPhy);
+                                            physicalMemory.Write(ProcessBSSPhy++, data);
                                             data.Name = instruction.Name;
                                             data.Source = instruction.Source;
                                             data.Size = instruction.Size;
-
-                                            bssDataList.Add(data);
-                                            currBssPage.AddData(data.Source, data.Name);
+                                            BssList.Add(data);
                                             break;
                                         case "Memory":
-                                            memoryLocatedData heapData = new memoryLocatedData();
+                                            memoryLocatedData heapData = new memoryLocatedData(ProcessHeapPhy);
+                                            physicalMemory.Write(ProcessHeapPhy++, heapData);
                                             heapData.Name = instruction.Name;
                                             heapData.Source = instruction.Source;
                                             heapData.Size = instruction.Size;
-                                            heapDataList.Add(heapData);
-                                            currMemPage.AddData(heapData.Source, heapData.Name);
+                                            DataList.Add(heapData);
                                             break;
 
-                                    }       
+                                    }
                                     //Console.WriteLine("Segment {0} Instruction {1}", segment.Name, instruction.Name);
                                 }
                 }
-               
+
             }
-            
+            // Create Descriptors
+            codeHiveDesc = new PageDesc(head_ProcessCodePhy, ProcessCodePhy - head_ProcessCodePhy, PageDesc.DescType.Code);
+            dataHiveDesc = new PageDesc(head_ProcessCodePhy, ProcessCodePhy - head_ProcessCodePhy, PageDesc.DescType.Heap);
+            bssHiveDesc = new PageDesc(head_ProcessCodePhy, ProcessCodePhy - head_ProcessCodePhy, PageDesc.DescType.BSS);
+
+            int virtualAddress = head_ProcessCodePhy;
+            //Map virutal Addess space
+            foreach (pseudoInstruction instruction in CodeList)
+            {
+                codeHiveDesc.AddData(virtualAddress++, instruction);
+            }
+
+            virtualAddress = head_ProcessHeapPhy;
+            foreach (memoryLocatedData data in DataList)
+            {
+                dataHiveDesc.AddData(virtualAddress++, data);
+            }
+
+            virtualAddress = head_ProcessBSSPhy;
+            foreach (memoryLocatedData data in BssList)
+            {
+                bssHiveDesc.AddData(virtualAddress++, data);
+            }
+
 
         }
 
@@ -231,46 +305,70 @@ namespace ProcessMigration
 
         }
 
-        public async Task<int> EntryPoint(Thread thread)
+        public void CreateMainThread(Thread thread)
+        {
+            Os os = Os.GetSingleton();
+
+            mainThread = thread;
+            threads.Add(mainThread);
+            mainThread.AssingMemory(pages);
+
+        }
+
+        public async Task<int> EntryPoint(Thread thread, hwCPU _cpu)
         {
             const int MAX_LOAD_VALUE = 5;
+
+            thread.AssingCPU(_cpu);
+            //Proccess Entry point
+            _cpu.SetIP(head_ProcessCodePhy);
 
             await Task.Delay(1000);
 
             int Threshold = 0;
-            int idxCurrentInstruction = idxEntryPoint;
             Os os = Os.GetSingleton();
-
-            hwCPU hwCpu =  os.FindFreeCPU(Pid);
-
-            mainThread = thread;
-            mainThread.AssingMemory(pages);
-            mainThread.AssingCPU(hwCpu);
 
             do
             {
-                int previousInstruction = idxCurrentInstruction;
-
-                if (mainThread.GetState() == ThreadState.WAIT)
+                
+                if (thread.GetState() == ThreadState.WAIT)
                 {
-                    Console.WriteLine("[{0}(pid:{1})]: Entering wait state", Name, Pid, mainThread.tid);
-                    mainThread.WaitForEvent();
-                    Console.WriteLine("[{0}(pid:{1})]: Exiting wait state", Name, Pid, mainThread.tid);
+                    Console.WriteLine("[{0}(pid:{1})]: Entering wait state", Name, Pid, thread.tid);
+                    thread.WaitForEvent();
+                    Console.WriteLine("[{0}(pid:{1})]: Exiting wait state", Name, Pid, thread.tid);
                 }
-                string nextIp = mainThread.RunInstruction(orderedInstructionList["Offset#" + idxCurrentInstruction]);
-                if (nextIp == "Halt")
-                    break;
-                if (nextIp != "Fetch")
+
+                if (thread.GetState() == ThreadState.SUSPENDED)
                 {
-                    idxCurrentInstruction = FindNextEntryPoint(nextIp);
-
+                    Console.WriteLine("[{0}(pid:{1})]: Entering suspend state", Name, Pid, thread.tid);
+                    thread.SuspendForEvent(thread);
+                    Console.WriteLine("[{0}(pid:{1})]: Exiting suspend state", Name, Pid, thread.tid);
                 }
-                else
-                    idxCurrentInstruction++;
 
+                //currentState
+                //string nextIp = mainThread.RunInstruction(orderedInstructionList["Offset#" + idxCurrentInstruction]);
+                int previousInstruction = _cpu.GetIP();
+
+                string nextIp = mainThread.RunInstruction((pseudoInstruction)_cpu.Fetch());
+
+                switch (nextIp)
+                {
+                    case "MainLoop":
+                        while (true)
+                        {
+                            Task.Delay(1000);
+                        }
+                    case "Halt":
+                        goto _Out;
+                    case "Fetch":
+                        break;
+                    default:
+                        _cpu.SetIP(FindNextEntryPoint(nextIp));
+                        break;
+                }
                 //TODO: Profiler to detect heavy load
                 if (ProfilerEnabled != 0)
-                    if (idxCurrentInstruction < previousInstruction)
+                    if (_cpu.GetIP() < previousInstruction)
                     {
                         Threshold++;
                         if (Threshold == MAX_LOAD_VALUE)
@@ -300,13 +398,29 @@ namespace ProcessMigration
 
                             Console.WriteLine("Process[{0}]:Profiler - offloading Thread[{3}] to Process[{2}],", Pid, mainThread.tid, heavyLoader.Pid, mainThread.tid);
 
-                            Tuple<PageDesc, string> var = loaderMainThread.GetDataDesc(ProfilerSyncEventVar, PageType.DATA);
-                            os.GetEvent(Int32.Parse(var.Item2)).Reset();
+
+                            int virtualAddress = heavyLoader.GetHive("Memory").GetDataVirtualAddress(ProfilerSyncEventVar);
+                            os.GetEvent(Int32.Parse(loaderMainThread.GetCurrentCPU().LoadData(virtualAddress))).Reset();
                         }
                     }
             } while (true) ;
-            
+  _Out:          
             return 0;
+        }
+
+        public PageDesc GetHive(string pageType)
+        {
+            switch (pageType)
+            {
+                case "BSS":
+                    return bssHiveDesc;
+                case "Memory":
+                    return dataHiveDesc;
+                case "CS":
+                    return codeHiveDesc;
+
+            }
+            return null;
         }
 
         public Thread GetMainThread()
@@ -322,7 +436,7 @@ namespace ProcessMigration
             {
                 if (inst.Key == lable)
                 {
-                    return i;
+                    return head_ProcessCodePhy + i;
                 }
                 i++;
             }
@@ -332,6 +446,37 @@ namespace ProcessMigration
         internal string GetProcessName()
         {
             return Name;
+        }
+
+        internal int GetPId()
+        {
+            return Pid;
+        }
+        internal hwCPU AssignCpu()
+        {
+            hwCPU cpu =  Os.GetSingleton().FindFreeCPU(Pid);
+
+            foreach (var inst in codeHiveDesc.GetEntries())
+            {
+                cpu.AddMmuEntry(inst.Key, inst.Value);
+            }
+
+            foreach (var inst in dataHiveDesc.GetEntries())
+            {
+                cpu.AddMmuEntry(inst.Key, inst.Value);
+            }
+
+            foreach (var inst in bssHiveDesc.GetEntries())
+            {
+                cpu.AddMmuEntry(inst.Key, inst.Value);
+            }
+
+            return cpu;
+        }
+
+        internal List<Thread> GetThreads()
+        {
+            return threads;
         }
 
         public string Name { get; set; }
@@ -344,16 +489,38 @@ namespace ProcessMigration
         private const int AllocMem = 4;
 
         private Dictionary<string, pseudoInstruction> orderedInstructionList { get; set; }
-        private List<memoryLocatedData> heapDataList { get; set; }
-        private List<memoryLocatedData> bssDataList{ get; set; }
-        private object processLock;
+        private List<memoryLocatedData> DataList { get; set; }
+        private List<memoryLocatedData> BssList { get; set; }
+        private List<pseudoInstruction> CodeList { get; set; }
 
-        private int idxEntryPoint = 0;
+        private Tuple<int, int> ProcessHeap;
+        private Tuple<int, int> ProcessCode;
+        private Tuple<int, int> ProcessBSS;
+        private Tuple<int, int> ProcessStack;
+
+        private int ProcessHeapPhy;
+        private int ProcessCodePhy;
+        private int ProcessBSSPhy;
+        private int ProcessStackPhy;
+
+        private const int head_ProcessHeapPhy = 100;
+        private const int head_ProcessCodePhy = 400;
+        private const int head_ProcessBSSPhy = 0;
+        private const int head_ProcessStackPhy = 1024;
+
+        private PageDesc codeHiveDesc;
+        private PageDesc dataHiveDesc;
+        private PageDesc bssHiveDesc;
+
+        private int physicalMemorycurrPtr;
+
+        private object processLock;
 
         private int Pid;
 
         internal Dictionary<int, PageDesc> pages;
         internal int LastFreePageIdx = 1;
+        internal List<Thread> threads;
 
         Thread mainThread;
         private volatile int ProfilerEnabled = 0;

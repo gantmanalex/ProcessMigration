@@ -2,6 +2,9 @@
 using System.CodeDom;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,21 +21,15 @@ namespace ProcessMigration
 
     public class Thread
     {
-        public Thread(int tid)
+        public Thread(int tid, Process owner)
         {
             Tid = tid;
-        }
-
-        public void AssignToProcess(string hostringProcessName, int pid)
-        {
-            ProcessName = hostringProcessName;
-            Pid = pid;
+            Owner = owner;
         }
 
         private hwCPU current;
         private Dictionary<int, PageDesc> memory;
         private string ProcessName;
-        private int Pid;
         private int Tid;
         private ThreadState currentState;
         public object threadLock = new object();
@@ -43,10 +40,12 @@ namespace ProcessMigration
         {
             current = cpu;
         }
+
         internal void AssingMemory(Dictionary<int, PageDesc> memlist)
         {
             memory = memlist;
         }
+
         public void SetState(ThreadState state, object obj)
         {
             SystemEvent _event;
@@ -58,7 +57,7 @@ namespace ProcessMigration
                     if (currentState != ThreadState.WAIT)
                     {
                         Process process = (Process)obj;
-                        Task<int> task = Task.Run(() => process.EntryPoint(this));
+                        Task<int> task = Task.Run(() => process.EntryPoint(this, process.AssignCpu()));
                     }
                     currentState = state;
                     break;
@@ -68,6 +67,10 @@ namespace ProcessMigration
                     currentState = state;
                     _event.Wait();
                     break;
+                case ThreadState.SUSPENDED:
+                    ThreadSuspendEvent = new SystemEvent(this, SystemEvent.EventState.NON_SIGNALED, -1);
+                    currentState = ThreadState.SUSPENDED;
+                    break;
             }
           
         }
@@ -75,19 +78,6 @@ namespace ProcessMigration
         public ThreadState GetState()
         {
             return currentState;
-        }
-        public Tuple<PageDesc , string> GetDataDesc(string var_name, PageType type)
-        {
-            foreach (var mem in memory)
-            {
-                string data = mem.Value.GetData(var_name, type);
-                if (data != null)
-                {
-                    return new Tuple<PageDesc, string> (mem.Value, data);
-                }
-
-            }
-                return null;
         }
 
         public string RunInstruction(pseudoInstruction pseudoInstruction)
@@ -98,53 +88,54 @@ namespace ProcessMigration
             {
                 case "OsInvokeMethod":
                     {
+                        int virtualAddress;
                         Os os = Os.GetSingleton();
                         OsInvokeMethod inst = (OsInvokeMethod)pseudoInstruction;
-                        Tuple<PageDesc, string> var;
 
                         switch (inst.Name)
                         {
                             case "os_ConsolePrint":
 
-                                var = GetDataDesc(inst.Param0, PageType.BSS);
-
-                                Console.WriteLine("[{0}(pid:{1})]:{2}", ProcessName, Pid, var.Item2);
+                                virtualAddress = Owner.GetHive(inst.Type).GetDataVirtualAddress(inst.Param0);
+                                Console.WriteLine("[{0}(pid:{1} tid{2})]:{3}", Owner.GetProcessName(), Owner.GetPId(), current.GetTid() , current.LoadData(virtualAddress));
                                 break;
                             case "os_CreateProcess":
 
-                                var = GetDataDesc(inst.Param0, PageType.DATA);
-
-                                int pid = os.CreateProcess(inst.Param1.Substring(0, inst.Param1.IndexOf(".")).Trim(), Os.ProcessLocation + inst.Param1);
-
-                                var.Item1.SetData(DataLocation.HEAP, inst.Param0, pid.ToString());
+                                virtualAddress = Owner.GetHive(inst.Type).GetDataVirtualAddress(inst.Param0);
+                                int pid = os.CreateProcess(inst.Param1.Substring(0, inst.Param1.IndexOf(".")).Trim(), Os.ProcessLocation + inst.Param1, emMemory.GetSingleTone().AllocatePageHive(1024));
+                                current.StoreData(virtualAddress, pid.ToString());
                                 
                                 break;
                             case "os_MonitorLoad":
 
-                                var = GetDataDesc(inst.Param0, PageType.DATA);
-                                int heavyLoadedPid = Int32.Parse(var.Item2);
-                                Process ownerProcess = os.GetProcessById(Pid);
+                                virtualAddress = Owner.GetHive(inst.Type).GetDataVirtualAddress(inst.Param0);
+                                int heavyLoadedPid = Int32.Parse(current.LoadData(virtualAddress));
+                                Process ownerProcess = os.GetProcessById(Owner.GetPId());
 
                                 ownerProcess.MonitorLoad(heavyLoadedPid, inst.Param1);
                                 break;
                             case "os_CreateEvent":
-                                   
-                                var = GetDataDesc(inst.Param0, PageType.DATA);
+
+                                virtualAddress = Owner.GetHive(inst.Type).GetDataVirtualAddress(inst.Param0);
                                 int eventId = os.CreateSyncEvent(this, SystemEvent.EventState.NON_SIGNALED, -1);
-                                var.Item1.SetData(DataLocation.HEAP, inst.Param0, eventId.ToString());
+                                current.StoreData(virtualAddress, eventId.ToString());
 
                                 break;
                             case "os_WaitEvent":
-                                var = GetDataDesc(inst.Param0, PageType.DATA);
+                                virtualAddress = Owner.GetHive(inst.Type).GetDataVirtualAddress(inst.Param0);
 
-                                SystemEvent _event =  os.GetEvent(Int32.Parse(var.Item2));
+                                SystemEvent _event =  os.GetEvent(Int32.Parse(current.LoadData(virtualAddress)));
 
                                 SetState(ThreadState.WAIT, _event);
 
                                 break;
                             case "Exit":
-                                Console.WriteLine("[{0}(pid:{1})]:Process exit ", ProcessName, Pid, inst.Param0);
+                                Console.WriteLine("[{0}(pid:{1})]:Process exit ", ProcessName, Owner.GetPId(), inst.Param0);
                                 return "Halt";
+
+                            case "MainLoop":
+                                Console.WriteLine("[{0}(pid:{1})]: System up and running", ProcessName, Owner.GetPId(), inst.Param0);
+                                return "MainLoop";
 
                         }
 
@@ -159,19 +150,8 @@ namespace ProcessMigration
                                 switch (inst.Operand)
                                 {
                                     case "indirect_to":
-                                        String data = null;
-
-                                        //Find variable in memory (Emulating Linker work)
-                                        foreach (var mem in memory)
-                                        {
-                                            PageDesc desc = mem.Value;
-                                            if (desc.isContainVariable(inst.Param0)) 
-                                            { 
-                                                desc.SetData(DataLocation.HEAP, inst.Param0, inst.Param1);
-                                                break;
-                                            }
-                                        }
-
+                                        int virtualAddress = Owner.GetHive(inst.Type).GetDataVirtualAddress(inst.Param0);
+                                        current.StoreData(virtualAddress, inst.Param1);
                                         break;
                                 }
                                 break;
@@ -179,25 +159,18 @@ namespace ProcessMigration
                                 switch (inst.Operand)
                                 {
                                     case "indirect_while_less":
-                                        //Find variable in memory (Emulating Linker work)
-                                        foreach (var mem in memory)
+
+                                        int virtualAddress = Owner.GetHive(inst.Type).GetDataVirtualAddress(inst.Param0);
+                                        int counter = Int32.Parse(current.LoadData(virtualAddress));
+                                        int condition = Int32.Parse(inst.Param1);
+
+                                        if (counter < condition)
                                         {
-                                            PageDesc desc = mem.Value;
-                                            if (desc.isContainVariable(inst.Param0))
-                                            {
-                                                int counter = Int32.Parse(desc.GetData(inst.Param0, PageType.DATA));
-                                                int condition = Int32.Parse(inst.Param1);
-
-                                                if (counter < condition)
-                                                {
-                                                    desc.SetData(DataLocation.HEAP, inst.Param0, (++counter).ToString());
-                                                    return inst.Param2;
-                                                }
-                                                return "Fetch";
-                                            }
+                                            current.StoreData(virtualAddress, (++counter).ToString());
+                                            return inst.Param2;
                                         }
+                                        return "Fetch";
 
-                                        break;
                                 }
                                 break;
 
@@ -211,6 +184,9 @@ namespace ProcessMigration
         }
 
         private List<SystemEvent> ThreadWaitList = new List<SystemEvent>();
+        private SystemEvent ThreadSuspendEvent;
+
+        private Process Owner;
 
         internal void WaitForEvent()
         {
@@ -219,6 +195,26 @@ namespace ProcessMigration
             {
                 _event.Wait();
             }
+        }
+
+        internal void SuspendForEvent(Thread thread)
+        {
+            ThreadSuspendEvent.Wait();
+        }
+
+        internal Process GetOwnerProcces()
+        {
+            return Owner;
+        }
+
+        internal hwCPU GetCurrentCPU()
+        {
+            //TODO: IT is possible that currently no CPU assigned to Thread
+            if (current == null)
+            {
+                throw new NotImplementedException();
+            }
+            return current;
         }
     }
 }

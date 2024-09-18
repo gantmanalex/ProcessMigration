@@ -16,21 +16,12 @@ namespace ProcessMigration
         private const int _PAGE_SIZE = 4096;
 
         private static readonly hwCPU[] cpu = new hwCPU[numOfCPUs];
-        private static readonly hwMemoryPage[] memory = new hwMemoryPage[numOfMemoryPages];
 
         //Interrupt vector
         private static readonly SysInt[] sysInt = { new SysInt(1, "Scheduler"), new SysInt(2, "Page fault") };
         private emSystem()
         {
             Console.WriteLine("System Boot...");
-
-            Console.WriteLine("Attaching memory ...");
-            int address = 0;
-            for (int i = 0; i < numOfMemoryPages; i++)
-            {
-                memory[i] = new hwMemoryPage(PageType.NOSPEC);
-                address += _PAGE_SIZE;
-            }
 
             Os os = Os.GetSingleton();
 
@@ -59,11 +50,6 @@ namespace ProcessMigration
         {
             Console.WriteLine ("OS registered callback in Int vector %1:%2 ", sysInt.GetIntVector(), sysInt.GetIntDescription());
             return sysInt.RegisterCallback(intCB);
-        }
-
-        internal hwMemoryPage getMemory(int idx)
-        {
-            return memory[idx];
         }
 
         internal int getMemorySizeInPages()

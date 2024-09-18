@@ -63,6 +63,11 @@ namespace ProcessMigration
         {
             //Boot up OS
             Console.WriteLine("Starting OS ...");
+
+            //Adding CPUs
+            freeCPUs.Add(new hwCPU(0));
+            freeCPUs.Add(new hwCPU(1));
+            freeCPUs.Add(new hwCPU(1));
         }
 
         private static readonly Os os = new Os();
@@ -80,23 +85,15 @@ namespace ProcessMigration
 
 
             Console.WriteLine("[OS]: Collecting system CPUs...");
-            //Init system resource
-            Console.WriteLine("[OS]: Initializing system memory...");
-            SystemMemoryList = new PageDesc[system.getMemorySizeInPages()];
-
-            //TODO: Page descriptor can contain more the one physical page
-            for (int i = 0; i < system.getMemorySizeInPages(); i++)
-                if (i % 2 == -0)
-
-                    SystemMemoryList[i] = new PageDesc(system.getMemory(i).GetPageAddress(), 1, PageType.DATA);
-                 else
-                    SystemMemoryList[i] = new PageDesc(system.getMemory(i).GetPageAddress(), 1, PageType.BSS);
 
             Console.WriteLine("[OS]: Initializing Worker ...");
 
             processes = new Dictionary<int, Process>();
 
-            CreateProcess("Worker", ProcessLocation + "\\WorkerProcess.json");
+
+            CreateProcess("System", ProcessLocation + "\\system.json", emMemory.GetSingleTone().AllocatePageHive(1024));
+
+            CreateProcess("Worker", ProcessLocation + "\\WorkerProcess.json", emMemory.GetSingleTone().AllocatePageHive(1024));
         }
 
         internal hwCPU FindFreeCPU(int processId)
@@ -121,40 +118,34 @@ namespace ProcessMigration
             throw new NotImplementedException();
         }
 
-        private int systemProcessIdx = 1;
+        private int systemProcessIdx = 0;
+        private int systemThreadIdx = 0;
 
-        public int CreateProcess(string name, string executable)
+        public int CreateProcess(string name, string executable, emMemory.hwMemory _physicalMemory, bool createSuspended = false)
         {
-            processes[systemProcessIdx] = new Process(name, 1, executable); // 0 - for system process; 1 - worker process
+            processes[systemProcessIdx] = new Process(name, systemProcessIdx, executable, _physicalMemory); // 0 - for system process; 1 - worker process
 
-            Tuple<Thread, ThreadState> systemMainThread = new Tuple<Thread, ThreadState>(new Thread(1), ThreadState.HALT);
-            threads.Add(systemMainThread);
+            if (systemProcessIdx == 0) //System main thread
+            {
+                systemMainThread = new Tuple<Thread, ThreadState>(new Thread(systemThreadIdx++, processes[systemProcessIdx]), ThreadState.HALT);
+                threads.Add(systemMainThread);
+                processes[systemProcessIdx].CreateMainThread(systemMainThread.Item1);
+                systemMainThread.Item1.SetState(ThreadState.RUNNING, processes[systemProcessIdx]);
 
-            systemMainThread.Item1.AssignToProcess(processes[systemProcessIdx].GetProcessName(), systemProcessIdx);
+            }
+            else
+            {
+                Tuple<Thread, ThreadState> processMainThread = new Tuple<Thread, ThreadState>(new Thread(systemThreadIdx++, processes[systemProcessIdx]), ThreadState.HALT);
+                threads.Add(processMainThread);
+                processes[systemProcessIdx].CreateMainThread(processMainThread.Item1);
 
-            systemMainThread.Item1.SetState(ThreadState.RUNNING, processes[systemProcessIdx]);
+                if (!createSuspended)
+                    processMainThread.Item1.SetState(ThreadState.RUNNING, processes[systemProcessIdx]);
+            }
 
             return systemProcessIdx++;
         }
 
-        private bool AllocateMemory(PageDesc desc)
-        {
-            desc.LockDescriptor();
-            return true;
-        }
-
-        public PageDesc GetNextFreeMemoryDescriptor(PageType type)
-        {
-            foreach (PageDesc pageDesc in SystemMemoryList) 
-            { 
-                if (pageDesc.GetDescriptorType() == type)
-                {
-                    AllocateMemory(pageDesc);
-                    return pageDesc;
-                }
-            }
-            return null;
-        }
 
         internal Process GetProcessById(int pid)
         {
@@ -177,9 +168,30 @@ namespace ProcessMigration
 
         }
 
+        //This function will clone process for migration
+        public int CloneProcess(int processId)
+        {
+            Process origin = GetProcessById(processId);
+            SuspendProcess(origin);
+            int  cloneId = CreateProcess(origin.Name + "#1", "",  emMemory.GetSingleTone().AllocatePageHive(1024), false);
+            Process clone = GetProcessById(cloneId);
 
-        private List<hwCPU> freeCPUs = new List<hwCPU>();
-        private PageDesc[] SystemMemoryList;
+           Rdma.CopyProcess(origin, clone);
+
+            return clone.GetPId();
+
+        }
+
+        private void SuspendProcess(Process process)
+        {
+            foreach(Thread thread in process.GetThreads())
+            {
+                thread.SetState(ThreadState.SUSPENDED , null);
+            }
+        }
+
+        private Tuple<Thread, ThreadState> systemMainThread;
+        private List<hwCPU> freeCPUs = new List<hwCPU>(2);
         private Dictionary<int, Process> processes = new Dictionary<int, Process>();
         private emSystem System;
         private int freeSystemResourceIdx = 0;
@@ -190,50 +202,100 @@ namespace ProcessMigration
     //This class actually acts as linker !!!
     public class PageDesc
     {
-        //Page size in indexes
-        const int PapgeSize = 1;
-        public PageDesc(int virtualAddress, int count, PageType type)
-        { 
-
-            addr = virtualAddress;
-            varset = new Dictionary<int, string>();
-            hwMemPage = new hwMemoryPage[count];
-
-            DescriptorLock = false;
-            DescType = type;
-            for (int i = 0; i < count; i++) 
-            {
-                hwMemPage[i] = new hwMemoryPage(type);
+        //Page control Block
+        internal class PCB
+        {
+            public PCB(bool _mapped, bool _valid) {
+                mapped = _mapped;
+                valid = _valid;
+                durty = false;
             }
 
+            public void SetDurty()
+                { durty = true; }
+
+            bool mapped;
+            bool valid;
+            private bool durty;
         }
 
-        private readonly int addr;
-        private readonly PageType DescType;
-        private hwMemoryPage[] hwMemPage;
+        public enum DescType 
+        {
+            None = 0,
+            Code = 1,
+            BSS = 2,
+            Heap = 3,
+            Stack    
+        }
+        //Page size in indexes
+        const int PapgeSize = 1;
+        public PageDesc(int virtualAddress, int count, DescType _type)
+        {
+
+            Range = new Dictionary<int, PCB>(count);
+            Entries = new Dictionary<int, DataElement>();
+
+            head_VirtualAddress = virtualAddress;
+
+            DescriptorLock = false;
+            type = _type;
+
+        }
+
+        public Dictionary<int, DataElement> GetEntries()
+        {
+            return Entries;
+        }
+
+        private Dictionary<int, PCB> Range;
+        private Dictionary<int, DataElement> Entries;
+
+        private readonly int head_VirtualAddress;
+
+        private readonly DescType type;
         private bool DescriptorLock;
 
-        public void AddData(string data, string var_name)
+        public void AddData(int virtualAddress, DataElement element)
         {
-            varset[lastIdx] = var_name;
 
-            int offset = lastIdx++;
+            if (Entries.ContainsKey(virtualAddress))
+            {
+                Entries[virtualAddress] = element;
+                Range[virtualAddress] = new PCB(true, true);
+            }
+            else
+            {
+                Entries.Add(virtualAddress, element);
+                Range.Add(virtualAddress,new PCB(true, true));
 
-            //Assuming all data will fit one page
-            hwMemPage[0].StoreData(offset, data);
+            }
         }
-        public string GetData(string param0, PageType type)
+
+        public bool DeleteData(int virtualAddress)
         {
-            if (type != DescType) { return null; }
-            int idx = GetMemoryAddress(param0);
-            return hwMemPage[0].GetData(addr, idx);
+
+            if (Entries.ContainsKey(virtualAddress))
+            {
+                Entries[virtualAddress] = null;
+                Range.Remove(virtualAddress);
+                return true;
+            }
+            return false;
         }
 
-        public void SetData(DataLocation loc, string var_name, string data)
+        public int GetDataVirtualAddress(string name)
         {
-            int idx = GetMemoryAddress(var_name);
-            hwMemPage[0].SetData(idx, data);
+            //Will owrk for Heap and BSS Hives only !!!
+            foreach (memoryLocatedData element in Entries.Values)
+            {
+                if (element.Name == name)
+                {
+                    return element.GetPhisicalAddress();
+                }
+            }
+            return 0;
         }
+     
 
         public int GetMemoryAddress(string var_name)
         {
@@ -246,14 +308,14 @@ namespace ProcessMigration
             }
             return -1;
         }
-        public PageType GetDescriptorType()
+        public DescType GetDescriptorType()
         {
-            return DescType;
+            return type;
         }
 
-        public void LockPage(int idx)
+        public void LockPage(int virtualAddress)
         {
-            hwMemPage[idx].LockPage();
+            Range[virtualAddress].SetDurty();
 
         }
 
@@ -277,7 +339,6 @@ namespace ProcessMigration
         // This map acts like a linker converts variable name to it "address" 
         // which is actually int in data disctionary
         private Dictionary<int, string> varset;
-
         private int lastIdx = 0;
     }
 }
